@@ -29,13 +29,13 @@ import kotlinx.coroutines.launch
 class MediaHubViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = MediaHubDatabase.getDatabase(application)
-    private val repository = MediaRepository(database)
+    // Application Context সহ Repository ইনিশিয়ালাইজ করা হয়েছে
+    private val repository = MediaRepository(application, database)
 
     // UI Navigation State
-    private val _currentTab = MutableStateFlow("home") // "home", "music", "video", "podcasts", "search", "now_playing_audio", "now_playing_video", "podcast_episode"
+    private val _currentTab = MutableStateFlow("home")
     val currentTab: StateFlow<String> = _currentTab.asStateFlow()
 
-    // Screen stack for back navigation
     private val navigationStack = mutableListOf<String>()
 
     fun navigateTo(tab: String) {
@@ -53,23 +53,35 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    // Dynamic Database flows combined with default assets
+    // ==========================================
+    // অডিও ও গান/গজল স্টেট (লোকাল + অনলাইন)
+    // ==========================================
+    private val _allTracks = MutableStateFlow<List<Track>>(emptyList())
+    val allTracks: StateFlow<List<Track>> = _allTracks.asStateFlow()
+
+    // ==========================================
+    // ভিডিও স্টেট (ফোনের লোকাল ভিডিও + কাস্টম স্ট্রিম)
+    // ==========================================
+    private val _localVideos = MutableStateFlow<List<Video>>(emptyList())
+
     val customVideos: StateFlow<List<Video>> = repository.customVideos
-        .combine(MutableStateFlow(repository.getDefaultVideos())) { local, defaults ->
-            val localVideos = local.map {
+        .combine(_localVideos) { customEntities, localList ->
+            val customMapped = customEntities.map {
                 Video(
                     id = "custom_v_${it.id}",
                     title = it.title,
                     durationText = it.durationText,
-                    durationSeconds = 600, // standard estimate
+                    durationSeconds = 600,
                     coverUrl = it.coverUrl,
                     videoUrl = it.videoUrl,
                     category = "Custom Streams"
                 )
             }
-            localVideos + defaults
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), repository.getDefaultVideos())
+            // লোকাল ভিডিও + কাস্টম ডাটাবেজ ভিডিও
+            localList + customMapped
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // পডকাস্ট স্টেট
     val customPodcasts: StateFlow<List<Podcast>> = repository.customPodcasts
         .combine(MutableStateFlow(repository.getDefaultPodcasts())) { local, defaults ->
             val localPodcasts = local.map {
@@ -88,10 +100,44 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
     val recentPlayed: StateFlow<List<PlaybackHistoryItem>> = repository.recentPlayed
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val allTracks = MutableStateFlow(repository.getDefaultTracks())
     val allEpisodes = MutableStateFlow(repository.getDefaultEpisodes())
 
-    // Currently Selected objects
+    init {
+        // অ্যাপ চালু হলে লোকাল ফাইল লোড করার চেষ্টা করবে
+        loadLocalMedia()
+    }
+
+    /**
+     * ফোনের মেমোরি থেকে গান/গজল এবং ভিডিও লোড করার ফাংশন
+     * (পারমিশন দেওয়ার পরেও UI থেকে এটি কল করতে পারবেন)
+     */
+    fun loadLocalMedia() {
+        viewModelScope.launch {
+            try {
+                // ১. ফোন থেকে অডিও পড়া
+                val localAudios = repository.getLocalAudioFiles()
+                if (localAudios.isNotEmpty()) {
+                    _allTracks.value = localAudios
+                } else {
+                    _allTracks.value = repository.getDefaultTracks() // লোকাল না পেলে ডিফল্ট দেখাবে
+                }
+
+                // ২. ফোন থেকে ভিডিও পড়া
+                val localVids = repository.getLocalVideoFiles()
+                if (localVids.isNotEmpty()) {
+                    _localVideos.value = localVids
+                } else {
+                    _localVideos.value = repository.getDefaultVideos()
+                }
+            } catch (e: Exception) {
+                Log.e("MediaHubViewModel", "Error loading local media", e)
+                _allTracks.value = repository.getDefaultTracks()
+                _localVideos.value = repository.getDefaultVideos()
+            }
+        }
+    }
+
+    // Selected objects
     private val _selectedPodcast = MutableStateFlow<Podcast?>(null)
     val selectedPodcast: StateFlow<Podcast?> = _selectedPodcast.asStateFlow()
 
@@ -108,7 +154,7 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
         playEpisode(episode)
     }
 
-    // Media Player engine
+    // Media Player Engine
     private var mediaPlayer: MediaPlayer? = null
     private var progressJob: Job? = null
 
@@ -124,10 +170,10 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
-    private val _playbackProgress = MutableStateFlow(0L) // in seconds
+    private val _playbackProgress = MutableStateFlow(0L)
     val playbackProgress: StateFlow<Long> = _playbackProgress.asStateFlow()
 
-    private val _playbackDuration = MutableStateFlow(100L) // in seconds
+    private val _playbackDuration = MutableStateFlow(100L)
     val playbackDuration: StateFlow<Long> = _playbackDuration.asStateFlow()
 
     private val _playbackSpeed = MutableStateFlow(1.0f)
@@ -142,14 +188,13 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
     private val _volume = MutableStateFlow(0.8f)
     val volume: StateFlow<Float> = _volume.asStateFlow()
 
-    // Dialog state
     val videoStreamDialogShown = MutableStateFlow(false)
     val rssFeedDialogShown = MutableStateFlow(false)
 
     // Search state
     val searchQuery = MutableStateFlow("")
-    val searchFilterType = MutableStateFlow("All") // "All", "Music", "Video", "Podcasts"
-    val recentSearches = MutableStateFlow(listOf("interstellar", "chill vibes", "tech talk daily"))
+    val searchFilterType = MutableStateFlow("All")
+    val recentSearches = MutableStateFlow(listOf("গজল", "বাংলা গান", "tech talk"))
 
     fun search(query: String) {
         searchQuery.value = query
@@ -166,7 +211,9 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
         recentSearches.value = emptyList()
     }
 
-    // Media Playback control functions
+    // ==========================================
+    // Media Playback Controls
+    // ==========================================
     fun playTrack(track: Track) {
         resetPlayer()
         _currentPlayingEpisode.value = null
@@ -189,7 +236,8 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
 
         try {
             mediaPlayer = MediaPlayer().apply {
-                setDataSource(track.audioUrl)
+                // Context এবং Uri দিয়ে লোকাল এবং অনলাইন উভয় ফাইলই প্লে হবে
+                setDataSource(getApplication(), Uri.parse(track.audioUrl))
                 setVolume(_volume.value, _volume.value)
                 prepareAsync()
                 setOnPreparedListener {
@@ -208,7 +256,6 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
             }
         } catch (e: Exception) {
             Log.e("MediaHubViewModel", "Error starting track", e)
-            // Fallback simulated playing in case of network issue
             _isPlaying.value = true
             startProgressTrackerSimulated()
         }
@@ -237,7 +284,7 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
 
         try {
             mediaPlayer = MediaPlayer().apply {
-                setDataSource(episode.audioUrl)
+                setDataSource(getApplication(), Uri.parse(episode.audioUrl))
                 setVolume(_volume.value, _volume.value)
                 prepareAsync()
                 setOnPreparedListener {
@@ -270,7 +317,7 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
             repository.savePlaybackProgress(
                 mediaId = video.id,
                 title = video.title,
-                subtitle = "Video stream",
+                subtitle = "Video playback",
                 type = "VIDEO",
                 coverUrl = video.coverUrl,
                 duration = video.durationSeconds,
@@ -278,14 +325,13 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
             )
         }
 
-        // Videos are played using the standard VideoView directly on screen
         _isPlaying.value = true
         startProgressTrackerSimulated()
         navigateTo("now_playing_video")
     }
 
     private fun getPodcastArtwork(podcastId: String): String {
-        return customPodcasts.value.find { it.id == podcastId }?.artworkUrl ?: "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=500&auto=format&fit=crop&q=60"
+        return customPodcasts.value.find { it.id == podcastId }?.artworkUrl ?: "https://images.unsplash.com/photo-1478737270239-2f02b77fc618?w=500"
     }
 
     fun togglePlayPause() {
@@ -300,7 +346,6 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
                 startProgressTracker()
             } ?: run {
                 _isPlaying.value = true
-                // Continue simulation if no media player was initialized
                 if (_currentPlayingTrack.value != null) startProgressTrackerSimulated()
                 if (_currentPlayingEpisode.value != null) startProgressTrackerSimulated()
                 if (_currentPlayingVideo.value != null) startProgressTrackerSimulated()
@@ -437,7 +482,6 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
         _isPlaying.value = false
     }
 
-    // Adding dynamic custom sources
     fun addNewStream(title: String, url: String) {
         viewModelScope.launch {
             repository.addCustomVideo(title, url)
@@ -447,18 +491,17 @@ class MediaHubViewModel(application: Application) : AndroidViewModel(application
     fun addNewPodcastFeed(title: String, host: String, description: String) {
         viewModelScope.launch {
             repository.addCustomPodcast(title, host, description)
-            // Generate simple mock episode for this custom show
             val generatedEpisode = Episode(
                 id = "custom_ep_${System.currentTimeMillis()}",
-                podcastId = "custom_p_new", // generic ID
+                podcastId = "custom_p_new",
                 podcastTitle = title,
-                title = "Welcome Episode: Introduction to $title",
+                title = "Episode: $title",
                 dateText = "Just Now",
                 durationText = "15:00",
                 durationSeconds = 900,
                 description = description,
                 audioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3",
-                chapters = listOf(Chapter("Welcome and Overview", "00:00", 0))
+                chapters = listOf(Chapter("Welcome", "00:00", 0))
             )
             val updatedEpisodes = allEpisodes.value.toMutableList()
             updatedEpisodes.add(0, generatedEpisode)
