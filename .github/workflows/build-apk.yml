@@ -8,44 +8,96 @@ on:
 
 jobs:
   build:
+    name: Build MediaHub APK
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: mediahub
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Fix KSP version
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          toml = Path("gradle/libs.versions.toml")
+
+          if not toml.exists():
+              print("libs.versions.toml not found - skipping KSP fix")
+          else:
+              text = toml.read_text(encoding="utf-8")
+
+              old = 'googleDevtoolsKsp = "2.3.5"'
+              new = 'googleDevtoolsKsp = "2.3.6"'
+
+              if old in text:
+                  text = text.replace(old, new)
+                  toml.write_text(text, encoding="utf-8")
+                  print("KSP changed: 2.3.5 -> 2.3.6")
+              elif new in text:
+                  print("KSP is already 2.3.6")
+              else:
+                  print("KSP version line not found - leaving unchanged")
+          PY
 
       - name: Create debug.keystore
-        working-directory: mediahub
         run: |
-          keytool -genkeypair \
-            -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair \
+              -v \
+              -keystore "debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          ls -lh debug.keystore
+
+      - name: Check Firebase configuration
+        run: |
+          echo "Checking Google Services..."
+          find . -name "google-services.json" -print || true
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Clean previous build
+        run: |
+          gradle clean --no-daemon
 
       - name: Build Debug APK
-        working-directory: mediahub
         run: |
-          chmod +x gradlew
-          ./gradlew :app:assembleDebug --stacktrace
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Find APK
+        if: always()
+        run: |
+          echo "Searching for APK..."
+          find app/build/outputs -type f -name "*.apk" -print || true
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: MediaHub-debug-APK
-          path: mediahub/app/build/outputs/apk/debug/*.apk
+          path: |
+            mediahub/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
