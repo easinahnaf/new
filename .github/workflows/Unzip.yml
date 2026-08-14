@@ -1,0 +1,45 @@
+name: Unzip and commit mediahub archive
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'mediahub.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Unzip archive
+        run: |
+          if [ -f "mediahub.zip" ]; then
+            unzip -o mediahub.zip -d mediahub
+
+            if [ -d "mediahub/mediahub" ]; then
+              mv mediahub/mediahub/* mediahub/ || true
+              rm -rf mediahub/mediahub || true
+            fi
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            git add mediahub || true
+
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+            else
+              git commit -m "Unzip mediahub.zip"
+              git push
+            fi
+          else
+            echo "mediahub.zip not found"
+            exit 1
+          fi
