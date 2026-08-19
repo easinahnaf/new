@@ -60,10 +60,14 @@ class MediaRepository(
                 val contentUri: Uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
                 
                 // অ্যালবামের ছবি পাওয়ার Uri (যদি থাকে)
-                val artworkUri = ContentUris.withAppendedId(
-                    Uri.parse("content://media/external/audio/albumart"),
-                    albumId
-                ).toString()
+                val artworkUri = if (albumId > 0) {
+                    ContentUris.withAppendedId(
+                        Uri.parse("content://media/external/audio/albumart"),
+                        albumId
+                    ).toString()
+                } else {
+                    ""
+                }
 
                 val durationSeconds = (durationMs / 1000)
                 val durationText = formatDuration(durationMs)
@@ -185,5 +189,69 @@ class MediaRepository(
 
     suspend fun clearAllHistory() {
         database.playbackHistoryDao().clearHistory()
+    }
+
+    // ==========================================
+    // Default sample data providers
+    // These were referenced from the ViewModel but were missing after recent edits.
+    // Providing lightweight, strongly-typed defaults to fix compilation and ensure UI fallbacks.
+    // ==========================================
+    fun getDefaultTracks(): List<Track> {
+        return listOf(
+            Track(
+                id = "default_track_1",
+                title = "Sample Track",
+                artist = "Unknown Artist",
+                album = "Sample Album",
+                durationText = "03:30",
+                durationSeconds = 210,
+                coverUrl = "",
+                audioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+            )
+        )
+    }
+
+    fun getDefaultVideos(): List<Video> {
+        return listOf(
+            Video(
+                id = "default_video_1",
+                title = "Sample Video",
+                durationText = "00:30",
+                durationSeconds = 30,
+                coverUrl = "",
+                videoUrl = "",
+                category = "Samples"
+            )
+        )
+    }
+
+    fun getDefaultPodcasts(): List<Podcast> {
+        return listOf(
+            Podcast(
+                id = "default_podcast_1",
+                title = "Sample Podcast",
+                host = "Host",
+                description = "A sample podcast for fallback",
+                artworkUrl = "",
+                episodesCount = 1
+            )
+        )
+    }
+
+    fun getDefaultEpisodes(): List<Episode> {
+        return listOf(
+            Episode(
+                id = "default_ep_1",
+                podcastId = "default_podcast_1",
+                podcastTitle = "Sample Podcast",
+                title = "Welcome",
+                dateText = "",
+                durationText = "00:30",
+                durationSeconds = 30,
+                description = "Sample episode",
+                audioUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+                chapters = emptyList()
+            )
+        )
     }
 }
